@@ -78,6 +78,7 @@ struct kernelsnitch_shared_state {
     enum kernelsnitch_state state;
 
     int mte_enabled;
+    volatile size_t inc_counter;
 };
 
 #define WAIT() do { for (size_t i = 0; i < 2; ++i) sched_yield(); } while (0)
@@ -104,6 +105,7 @@ static void *__do_increase(void *arg)
     struct inc_arg *inc_arg = (struct inc_arg *)arg;
     struct kernelsnitch_shared_state *ks = inc_arg->ks;
     size_t id = inc_arg->id;
+    __sync_add_and_fetch(&ks->inc_counter, 1);
     SYSCHK(__futex((unsigned int *)&ks->inc_futex[id], FUTEX_WAIT_PRIVATE, 0, NULL, NULL, 0));
     free(inc_arg);
     return 0;
@@ -120,7 +122,7 @@ static void __increase(struct kernelsnitch_shared_state *ks, size_t id, size_t a
     ks->increase_tids = calloc(amount, sizeof(*ks->increase_tids));
     ASSERT_pr((ks->increase_tids != NULL), "failed to allocate futex waiter ids\n");
     ks->increase_count = amount;
-    ks->increase_id = id;
+    ks->inc_counter = 0;
     for (size_t i = 0; i < amount; ++i) {
         struct inc_arg *inc_arg = calloc(1, sizeof(struct inc_arg));
         inc_arg->id = id;
@@ -128,7 +130,9 @@ static void __increase(struct kernelsnitch_shared_state *ks, size_t id, size_t a
         SYSCHK(pthread_create(&ks->increase_tids[i], 0, __do_increase,
                               (void *)inc_arg));
     }
-    WAIT();
+    while (__sync_fetch_and_add(&ks->inc_counter, 0) < amount)
+        sched_yield();
+    usleep(200000);
 }
 
 static void __decrease(struct kernelsnitch_shared_state *ks)
@@ -294,8 +298,8 @@ struct kernelsnitch_shared_state *kernelsnitch_setup(size_t __mm_struct_sz, size
         ks->thread_cnt,
         ks->collisions,
         ks->mte_enabled ? "enabled" : "disabled");
-    pin_to_core(0);
     futex_init();
+    pin_to_core(0);
 
     ks->state = KERNELSNITCH_INIT;
     return ks;
@@ -324,7 +328,7 @@ void kernelsnitch_find_collisions(struct kernelsnitch_shared_state *ks)
 {
     #define ID 128
 #ifndef KERNELSNITCH_THRESHOLD_MULT
-#define KERNELSNITCH_THRESHOLD_MULT 10
+#define KERNELSNITCH_THRESHOLD_MULT 50
 #endif
     size_t count = 0;
     size_t wanted;

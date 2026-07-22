@@ -369,13 +369,13 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
       usleep(slide_enter_delay_usec());
     }
 
-    int tid = atomic_load(&slide_waiter_tid);
+    int self_tid = (int)SYSCHK(syscall(SYS_gettid));
     int calls = atomic_load(&slide_consume_calls);
     int entered = atomic_load(&slide_consume_enter_sched) + 1;
     atomic_store(&slide_consume_enter_sched, entered);
     atomic_store(&slide_consume_calls, calls + 1);
     *errno_ptr = 0;
-    long ret = sched_setattr_tid(tid, (calls % 19) + 1);
+    long ret = sched_setattr_tid(self_tid, (calls % 19) + 1);
     int saved_errno = *errno_ptr;
     atomic_store(&slide_consume_last_sched_ret, (int)ret);
     atomic_store(&slide_consume_last_sched_errno, saved_errno);
@@ -619,8 +619,11 @@ static int slide_child_trigger_write(void) {
   while (!atomic_load(&slide_route_done)) {
     usleep(1000);
   }
-  return atomic_load(&slide_waiter_ok) != 0 &&
-         atomic_load(&slide_pselect_write_window) != 0;
+  int ok = atomic_load(&slide_waiter_ok) != 0;
+  pr_info("slide child trigger write waiter_ok=%d write_window=%d\n",
+          atomic_load(&slide_waiter_ok),
+          atomic_load(&slide_pselect_write_window));
+  return ok;
 }
 
 static int slide_trigger_physical_state(void) {

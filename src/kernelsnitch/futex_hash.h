@@ -199,10 +199,16 @@ uint32_t __futex_hash(futex_key_t *key, uint32_t futex_hashsize)
     return hash & (futex_hashsize-1);
 }
 
+static unsigned long roundup_pow_of_two_exploit(unsigned long x) {
+    unsigned long p = 1;
+    if (x <= 1) return 1;
+    while (p < x) p <<= 1;
+    return p;
+}
 unsigned long futex_hashsize = (unsigned long)-1;
 void futex_init(void)
 {
-    futex_hashsize = SYSCHK(sysconf(_SC_NPROCESSORS_ONLN) * 256);
+    futex_hashsize = SYSCHK(roundup_pow_of_two_exploit((unsigned long)sysconf(_SC_NPROCESSORS_ONLN) * 256));
 }
 uint32_t futex_hash(size_t addr, size_t mm)
 {
